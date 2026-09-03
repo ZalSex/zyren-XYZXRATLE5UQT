@@ -1,0 +1,88 @@
+name: Build WhatsApp Crash APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Pillow
+        run: pip install Pillow
+
+      - name: Generate App Icons
+        run: python3 generate_icons.py
+
+      - name: Setup Gradle Wrapper
+        run: |
+          curl -L -o android/gradle/wrapper/gradle-wrapper.jar \
+            "https://github.com/gradle/gradle/raw/v8.4.0/gradle/wrapper/gradle-wrapper.jar"
+          chmod +x android/gradlew
+
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Inject Integrity Hash
+        run: python3 generate_integrity_hash.py
+
+      - name: Generate Release Keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore release.keystore \
+            -alias releasekey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 36500 \
+            -storepass playvora123 \
+            -keypass playvora123 \
+            -dname "CN=Limitless Play,O=Playvora,C=ID"
+          echo "Keystore generated"
+
+      - name: Sign APK with Release Keystore
+        run: |
+          APK=$(find android/app/build/outputs/apk/release/ -name "*.apk" | head -1)
+          BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
+          $ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner sign \
+            --ks release.keystore \
+            --ks-pass pass:playvora123 \
+            --key-pass pass:playvora123 \
+            --ks-key-alias releasekey \
+            --out output_signed.apk \
+            "$APK"
+          echo "APK signed OK"
+
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          cp output_signed.apk output/WhatsAppCrash.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "WhatsApp Crash APK #${{ github.run_number }}"
+          files: output/WhatsAppCrash.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
